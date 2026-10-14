@@ -6,6 +6,12 @@ import { promisify } from "node:util";
 
 const pExecFile = promisify(execFile);
 
+/**
+ * Claude Code's long-lived `CLAUDE_CODE_OAUTH_TOKEN` has no expiry metadata.
+ * Treat it as non-expiring so the daemon keeps polling until Anthropic 401s.
+ */
+export const ENV_TOKEN_EXPIRES_AT = Number.MAX_SAFE_INTEGER;
+
 /** The OAuth token Claude Code already stored. We read it; we never mint one. */
 export interface Credentials {
   accessToken: string;
@@ -67,6 +73,11 @@ export interface ReadCredentialsOptions {
   /** Overrides the macOS keychain read (raw JSON blobs). A testing seam. */
   readKeychain?: (services: string[]) => Promise<string[]>;
   /**
+   * Process env consulted for `CLAUDE_CODE_OAUTH_TOKEN`. Defaults to
+   * `process.env`. Injectable so tests don't mutate the real environment.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
    * Optional sink for per-source diagnostics — which sources were found, their
    * expiry, and which one won. Lets the daemon show *why* it judged a token
    * expired without this module depending on any logger.
@@ -74,11 +85,59 @@ export interface ReadCredentialsOptions {
   onDebug?: (msg: string) => void;
 }
 
+/** Build a non-expiring Credentials from a bare OAuth access token string. */
+function fromEnvToken(accessToken: string): Credentials {
+  return {
+    accessToken,
+    expiresAt: ENV_TOKEN_EXPIRES_AT,
+    subscriptionType: null,
+    rateLimitTier: null,
+  };
+}
+
+/**
+ * Claude Code can inject `CLAUDE_CODE_OAUTH_TOKEN` via `<configDir>/settings.json`
+ * (`{ "env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" } }`). Read that value if present.
+ */
+async function readSettingsEnvToken(
+  configDir: string,
+  debug: (msg: string) => void
+): Promise<string | null> {
+  try {
+    const raw = await readFile(join(configDir, "settings.json"), "utf8");
+    let j: unknown;
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      debug("credential source settings: unparseable — skipping");
+      return null;
+    }
+    const token = (j as { env?: { CLAUDE_CODE_OAUTH_TOKEN?: unknown } })?.env
+      ?.CLAUDE_CODE_OAUTH_TOKEN;
+    if (typeof token !== "string") {
+      debug("credential source settings: no CLAUDE_CODE_OAUTH_TOKEN");
+      return null;
+    }
+    const trimmed = token.trim();
+    if (trimmed.length === 0) {
+      debug("credential source settings: empty CLAUDE_CODE_OAUTH_TOKEN");
+      return null;
+    }
+    return trimmed;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    debug("credential source settings: absent (ENOENT)");
+    return null;
+  }
+}
+
 /**
  * Read the stored credentials for an account's config dir, or null if none.
  *
  * - Linux / any platform: plaintext `<configDir>/.credentials.json`.
  * - macOS: the login keychain (`security find-generic-password`).
+ * - Fallback: `CLAUDE_CODE_OAUTH_TOKEN` from the process env, then from
+ *   `<configDir>/settings.json` → `env` (Claude Code's shared-token setup).
  *
  * Windows DPAPI is not yet supported; a plaintext file there still works.
  *
@@ -89,7 +148,8 @@ export interface ReadCredentialsOptions {
  * keychain holds the live one. We therefore never let an expired source shadow a
  * live one: return the first *fresh* token found, and only fall back to an
  * expired source (so the caller can report "expired") when nothing fresher
- * exists anywhere.
+ * exists anywhere. Env / settings tokens are treated as always-fresh (no
+ * expiry metadata) and win over a stale file/keychain.
  */
 export async function readCredentials(
   configDir: string,
@@ -97,6 +157,7 @@ export async function readCredentials(
 ): Promise<Credentials | null> {
   const now = opts.now ?? Date.now();
   const readKeychain = opts.readKeychain ?? readKeychainDefault;
+  const env = opts.env ?? process.env;
   const debug = opts.onDebug ?? (() => {});
   const expiry = (c: Credentials) =>
     Number.isFinite(c.expiresAt) ? new Date(c.expiresAt).toISOString() : "invalid";
@@ -144,6 +205,24 @@ export async function readCredentials(
     const fresh = useIfFresh(c, label);
     if (fresh) return fresh;
     stale ??= { c, label };
+  }
+
+  // 3. CLAUDE_CODE_OAUTH_TOKEN from the process environment (explicit override).
+  const envTok = env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (envTok && envTok.length > 0) {
+    const c = fromEnvToken(envTok);
+    debug(`credential chosen: env CLAUDE_CODE_OAUTH_TOKEN (no expiry)`);
+    return c;
+  }
+  debug("credential source env: no CLAUDE_CODE_OAUTH_TOKEN");
+
+  // 4. Same var from settings.json — how a shared token is often injected without
+  //    a full Claude Code login / .credentials.json on the machine.
+  const settingsTok = await readSettingsEnvToken(configDir, debug);
+  if (settingsTok) {
+    const c = fromEnvToken(settingsTok);
+    debug(`credential chosen: settings.json env.CLAUDE_CODE_OAUTH_TOKEN (no expiry)`);
+    return c;
   }
 
   if (stale) {

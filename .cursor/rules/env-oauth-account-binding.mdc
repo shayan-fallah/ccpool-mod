@@ -1,0 +1,22 @@
+---
+description: Follow-up for CLAUDE_CODE_OAUTH_TOKEN users missing oauthAccount binding
+alwaysApply: true
+---
+
+# Env OAuth token vs account binding
+
+ccpool can read `CLAUDE_CODE_OAUTH_TOKEN` from the process env or from
+`~/.claude/settings.json` → `env` (see `packages/core/src/identity/credentials.ts`).
+That unblocks the **usage poll** when there is no `.credentials.json` / keychain.
+
+**Open issue the user may hit next:** group create/join still requires a hydrated
+Claude `accountUuid` from `~/.claude.json` → `oauthAccount` (`resolveAccount`).
+A friend who only injects the env token and never completed a normal Claude Code
+login may fail `ccpool init` / account binding even though polling would work.
+
+Symptom to watch for (from `probeSharedGroup` in `apps/cli/src/lib/setup.ts`):
+
+> no onboarded Claude account on this machine — sign into Claude Code first
+
+If the user reports that, fix or work around the missing `oauthAccount`
+hydration path — do not assume the env-token credential change alone is enough.

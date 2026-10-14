@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isTokenExpired, readCredentials } from "./credentials.js";
+import { ENV_TOKEN_EXPIRES_AT, isTokenExpired, readCredentials } from "./credentials.js";
 
 describe("isTokenExpired", () => {
   it("is false before expiry, true at/after, true when missing", () => {
@@ -131,5 +131,95 @@ describe("readCredentials (freshest source wins)", () => {
       readKeychain: async () => ["}{ not json", oauth("live-keychain", 20_000)],
     });
     expect(creds?.accessToken).toBe("live-keychain");
+  });
+});
+
+describe("readCredentials (CLAUDE_CODE_OAUTH_TOKEN)", () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ccpool-creds-env-"));
+  });
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const emptyKeychain = { readKeychain: async () => [] as string[] };
+
+  it("reads CLAUDE_CODE_OAUTH_TOKEN from the process env when no file/keychain", async () => {
+    const creds = await readCredentials(dir, {
+      ...emptyKeychain,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: " sk-env-token " },
+    });
+    expect(creds).toEqual({
+      accessToken: "sk-env-token",
+      expiresAt: ENV_TOKEN_EXPIRES_AT,
+      subscriptionType: null,
+      rateLimitTier: null,
+    });
+    expect(isTokenExpired(creds!)).toBe(false);
+  });
+
+  it("reads CLAUDE_CODE_OAUTH_TOKEN from settings.json env", async () => {
+    await writeFile(
+      join(dir, "settings.json"),
+      JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-settings-token" } })
+    );
+    const creds = await readCredentials(dir, {
+      ...emptyKeychain,
+      env: {}, // no process-env token — fall through to settings
+    });
+    expect(creds?.accessToken).toBe("sk-settings-token");
+    expect(creds?.expiresAt).toBe(ENV_TOKEN_EXPIRES_AT);
+  });
+
+  it("prefers process env over settings.json", async () => {
+    await writeFile(
+      join(dir, "settings.json"),
+      JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-settings-token" } })
+    );
+    const creds = await readCredentials(dir, {
+      ...emptyKeychain,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-env-wins" },
+    });
+    expect(creds?.accessToken).toBe("sk-env-wins");
+  });
+
+  it("uses env/settings token when the credentials file is expired", async () => {
+    const now = 10_000;
+    await writeFile(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "stale-file", expiresAt: 5_000 } })
+    );
+    const creds = await readCredentials(dir, {
+      now,
+      ...emptyKeychain,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-fresh-env" },
+    });
+    expect(creds?.accessToken).toBe("sk-fresh-env");
+    expect(isTokenExpired(creds!, now)).toBe(false);
+  });
+
+  it("still prefers a fresh credentials file over the env token", async () => {
+    const now = 10_000;
+    await writeFile(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: "fresh-file", expiresAt: 20_000 } })
+    );
+    const creds = await readCredentials(dir, {
+      now,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-env-ignored" },
+    });
+    expect(creds?.accessToken).toBe("fresh-file");
+  });
+
+  it("ignores an empty settings token and falls through", async () => {
+    // Wipe leftover .credentials.json from prior cases in this shared dir.
+    await writeFile(
+      join(dir, "settings.json"),
+      JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: "   " } })
+    );
+    await rm(join(dir, ".credentials.json"), { force: true });
+    const creds = await readCredentials(dir, { ...emptyKeychain, env: {} });
+    expect(creds).toBeNull();
   });
 });
