@@ -240,7 +240,8 @@ export class Pipeline {
       tickFetch = outbound.fetchImpl;
       if (this.deps.outboundFetchHolder) this.deps.outboundFetchHolder.current = tickFetch;
     } else {
-      pollFailed = true;
+      // Do NOT set pollFailed — keep the normal ~60s interval so we re-probe the
+      // proxy quickly when VPN comes back (exponential backoff would hide retries).
       pollError = { status: null, message: outbound.reason, at: nowIso };
       this.log.warn(`${outbound.reason} — skipping all outbound requests this tick`);
     }

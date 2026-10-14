@@ -18,6 +18,10 @@ export default defineConfig({
   // single published `ccpool` package; keep real runtime deps external so npm
   // installs them normally.
   noExternal: [/^@ccpool\//],
+  // fetch-socks / undici use CJS `require("events")` etc. — bundling them into
+  // the ESM CLI breaks at runtime ("Dynamic require of events is not supported").
+  // Keep them as real node_modules deps and load via dynamic import for SOCKS5.
+  external: ["fetch-socks", "undici"],
   // The entry file already carries `#!/usr/bin/env node`; tsup preserves it.
   // Pull the canonical README/LICENSE from the repo root into the package root
   // at build time so they ship in the tarball without committing duplicates

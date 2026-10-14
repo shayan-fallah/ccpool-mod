@@ -81,12 +81,18 @@ importers:
       commander:
         specifier: ^13.1.0
         version: 13.1.0
+      fetch-socks:
+        specifier: ^1.3.3
+        version: 1.3.3
       ink:
         specifier: ^5.1.0
         version: 5.2.1(@types/react@18.3.31)(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
+      undici:
+        specifier: ^8.12.1
+        version: 8.12.1
     devDependencies:
       '@ccpool/core':
         specifier: workspace:*

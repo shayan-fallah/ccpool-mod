@@ -138,6 +138,16 @@ export async function resolveOutboundFetch(
       reason: `socks5 proxy unreachable at ${proxy.host}:${proxy.port}`,
     };
   }
-  const fetchImpl = await createSocks5Fetch(proxy);
-  return { ok: true, fetchImpl, proxy };
+  try {
+    const fetchImpl = await createSocks5Fetch(proxy);
+    return { ok: true, fetchImpl, proxy };
+  } catch (err) {
+    // Bundling / missing native deps must not crash the daemon tick — treat like
+    // a down proxy so the next interval can retry (and surface a clear reason).
+    return {
+      ok: false,
+      proxy,
+      reason: `socks5 proxy setup failed (${(err as Error).message})`,
+    };
+  }
 }
