@@ -6,6 +6,7 @@ import {
   type ViewSource,
 } from "@ccpool/core";
 import { DEFAULT_SERVER_URL } from "./links.js";
+import { outboundFetchHolder } from "./outbound.js";
 
 /**
  * The composition seam: commands never touch a database. The daemon writes
@@ -50,10 +51,14 @@ function creds(cfg: Config): { url: string; token: string } {
 
 export function makeIngestSink(cfg: Config): IngestSink {
   const { url, token } = creds(cfg);
-  return new HttpIngestSink(url, token);
+  return new HttpIngestSink(url, token, {
+    getFetch: () => outboundFetchHolder.current,
+  });
 }
 
 export function makeViewSource(cfg: Config): ViewSource {
   const { url, token } = creds(cfg);
-  return new HttpViewSource(url, token);
+  return new HttpViewSource(url, token, {
+    getFetch: () => outboundFetchHolder.current,
+  });
 }

@@ -21,6 +21,7 @@ import {
   stateFilePath,
 } from "../lib/config.js";
 import { makeIngestSink } from "../lib/backend.js";
+import { outboundFetchHolder } from "../lib/outbound.js";
 
 /**
  * Best-effort: stop a pre-multi-account daemon still running under the legacy
@@ -158,6 +159,7 @@ export async function runDaemonForeground(): Promise<void> {
       pidFile,
       pollIntervalMs: active?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       logLevel: active?.logLevel,
+      outboundFetchHolder,
     });
   } catch (err) {
     // Another daemon already owns the single-instance lock. Expected for a

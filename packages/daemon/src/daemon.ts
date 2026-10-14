@@ -1,4 +1,9 @@
-import { resolveAccount, type IngestSink, type readCredentials } from "@ccpool/core";
+import {
+  resolveAccount,
+  type IngestSink,
+  type readCredentials,
+  type resolveOutboundFetch,
+} from "@ccpool/core";
 import { Pipeline } from "./pipeline.js";
 import {
   acquireLock,
@@ -53,6 +58,10 @@ export interface DaemonDeps {
   fetchImpl?: typeof fetch;
   version?: string;
   readCredentials?: typeof readCredentials;
+  /** Shared with HttpIngestSink so SOCKS5-wrapped fetch applies to ingest too. */
+  outboundFetchHolder?: { current: typeof fetch };
+  resolveOutboundFetch?: typeof resolveOutboundFetch;
+  env?: NodeJS.ProcessEnv;
 }
 
 const MAX_BACKOFF_MS = 5 * 60_000;
@@ -145,6 +154,9 @@ export class Daemon {
       fetchImpl: this.deps.fetchImpl,
       version: this.deps.version,
       readCredentials: this.deps.readCredentials,
+      outboundFetchHolder: this.deps.outboundFetchHolder,
+      resolveOutboundFetch: this.deps.resolveOutboundFetch,
+      env: this.deps.env,
     });
     await pipeline.bootstrap();
     this.active = pipeline;

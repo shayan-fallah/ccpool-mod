@@ -61,6 +61,17 @@ export {
 export type { PollOptions } from "./usage/poller.js";
 export { detectResets } from "./usage/resets.js";
 
+// optional SOCKS5 outbound (Anthropic + ccpool server when configured)
+export {
+  DEFAULT_SOCKS5_PROXY,
+  parseSocks5Proxy,
+  resolveSocks5Proxy,
+  isSocks5ProxyReachable,
+  createSocks5Fetch,
+  resolveOutboundFetch,
+} from "./net/socks5.js";
+export type { Socks5Proxy, OutboundFetch } from "./net/socks5.js";
+
 // state
 export { buildLocalState, atomicWriteJson } from "./state/snapshot.js";
 export type { SnapshotInput } from "./state/snapshot.js";

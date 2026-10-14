@@ -11,6 +11,7 @@ import {
   pollUsage,
   projectsDir,
   readCredentials,
+  resolveOutboundFetch,
   UsageAuthError,
   UsageRequestError,
   type IngestSink,
@@ -55,6 +56,19 @@ export interface PipelineDeps {
    * expired). Defaults to core's {@link readCredentials}.
    */
   readCredentials?: typeof readCredentials;
+  /**
+   * Shared mutable fetch used by the HTTP ingest sink (and optionally views).
+   * When a SOCKS5 proxy is configured, each tick updates `current` to a
+   * proxy-wrapped fetch — or leaves the tick silent if the proxy is down.
+   */
+  outboundFetchHolder?: { current: typeof fetch };
+  /**
+   * Resolve outbound fetch (SOCKS5 gate). Injectable for tests. Defaults to
+   * core's {@link resolveOutboundFetch}.
+   */
+  resolveOutboundFetch?: typeof resolveOutboundFetch;
+  /** Process env for SOCKS5 resolution. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -213,7 +227,27 @@ export class Pipeline {
     let samples = this.prev;
     const batch = emptyBatch();
 
-    if (!creds || isTokenExpired(creds, this.nowMs())) {
+    // SOCKS5 gate: when CCPOOL_SOCKS5_PROXY (or CCPOOL_SOCKS5=1) is set and the
+    // proxy port is closed, send *nothing* — no Anthropic poll, no server ingest.
+    // Local JSONL is still collected and parked in `pending` until the proxy returns.
+    const resolveOutbound = this.deps.resolveOutboundFetch ?? resolveOutboundFetch;
+    const outbound = await resolveOutbound(this.deps.env ?? process.env, {
+      fetchImpl: this.deps.fetchImpl,
+    });
+    let networkAllowed = outbound.ok;
+    let tickFetch: typeof fetch = this.deps.fetchImpl ?? fetch;
+    if (outbound.ok) {
+      tickFetch = outbound.fetchImpl;
+      if (this.deps.outboundFetchHolder) this.deps.outboundFetchHolder.current = tickFetch;
+    } else {
+      pollFailed = true;
+      pollError = { status: null, message: outbound.reason, at: nowIso };
+      this.log.warn(`${outbound.reason} — skipping all outbound requests this tick`);
+    }
+
+    if (!networkAllowed) {
+      // Fall through to JSONL collect + park pending; skip poll block entirely.
+    } else if (!creds || isTokenExpired(creds, this.nowMs())) {
       // Skip the poll; Claude Code refreshes on its next run (see "Identity"). Not an error.
       tokenExpired = true;
       this.log.debug("token missing/expired — skipping poll");
@@ -221,7 +255,7 @@ export class Pipeline {
       try {
         this.log.debug("polling usage endpoint…");
         const fresh = await pollUsage(creds.accessToken, {
-          fetchImpl: this.deps.fetchImpl,
+          fetchImpl: tickFetch,
           version: this.deps.version,
           capturedAt: nowIso,
         });
@@ -304,7 +338,16 @@ export class Pipeline {
       this.log.warn(`jsonl ingest failed: ${(err as Error).message}`);
     }
 
-    const ingestOk = await this.sendBatch(batch, nowIso);
+    let ingestOk = false;
+    if (!networkAllowed) {
+      // Proxy down: do not touch the server. Park anything we collected for a later tick.
+      if (!isEmptyBatch(batch)) {
+        this.pending = this.pending ? mergeBatches(this.pending, batch) : batch;
+      }
+      ingestOk = false;
+    } else {
+      ingestOk = await this.sendBatch(batch, nowIso);
+    }
 
     // "synced X ago" must reflect a *complete* refresh — a fresh tank reading AND our
     // contribution landing — so only a fully-clean tick advances it. A failed poll or
@@ -388,6 +431,15 @@ export class Pipeline {
    */
   async bootstrap(): Promise<void> {
     try {
+      const resolveOutbound = this.deps.resolveOutboundFetch ?? resolveOutboundFetch;
+      const outbound = await resolveOutbound(this.deps.env ?? process.env, {
+        fetchImpl: this.deps.fetchImpl,
+      });
+      if (!outbound.ok) {
+        this.log.warn(`${outbound.reason} — skipping bootstrap until the proxy is up`);
+        return;
+      }
+      if (this.deps.outboundFetchHolder) this.deps.outboundFetchHolder.current = outbound.fetchImpl;
       const boot = await this.deps.sink.bootstrap();
       if (this.prev.length === 0) this.prev = boot.samples;
     } catch (err) {

@@ -5,6 +5,8 @@ import {
   pollUsage,
   readCredentials,
   resolveAccount,
+  resolveOutboundFetch,
+  resolveSocks5Proxy,
   UsageAuthError,
   type Config,
   type LocalState,
@@ -16,6 +18,7 @@ import {
 } from "@ccpool/core";
 import { isAlive, readPid } from "@ccpool/daemon";
 import { daemonControlPaths, stateFilePath } from "./config.js";
+import { outboundFetchHolder } from "./outbound.js";
 
 /** Where the numbers on screen came from. */
 export type ViewOrigin = "db" | "state" | "live" | "none";
@@ -111,24 +114,42 @@ export async function gatherView(
   let users: User[] = [];
   let stale = false;
   let loggedOut = false;
-  try {
-    const view = await source.fetchView();
-    dbSamples = view.samples;
-    shares = view.shares;
-    members = view.members;
-    users = view.users;
-  } catch (e) {
-    // A 401 isn't "unreachable" — the server rejected the bearer (unknown/revoked).
-    // That's logged-out, not a network problem, and the views must say so.
-    if (e instanceof ApiRequestError && e.status === 401) loggedOut = true;
-    else {
-      stale = true;
-      // Keep the last-known roster instead of blanking the members table on a
-      // transient blip: samples fall back to state.json below, the roster to `prev`.
-      if (prev) {
-        shares = prev.shares;
-        members = prev.members;
-        users = prev.users;
+
+  // When SOCKS5 is configured, all CLI HTTP (server + live Anthropic) goes through
+  // it; if the proxy is down we skip the network entirely and fall back to state.
+  const outbound = await resolveOutboundFetch(process.env);
+  const networkAllowed = outbound.ok;
+  if (outbound.ok) {
+    outboundFetchHolder.current = outbound.fetchImpl;
+  } else {
+    stale = true;
+    if (prev) {
+      shares = prev.shares;
+      members = prev.members;
+      users = prev.users;
+    }
+  }
+
+  if (networkAllowed) {
+    try {
+      const view = await source.fetchView();
+      dbSamples = view.samples;
+      shares = view.shares;
+      members = view.members;
+      users = view.users;
+    } catch (e) {
+      // A 401 isn't "unreachable" — the server rejected the bearer (unknown/revoked).
+      // That's logged-out, not a network problem, and the views must say so.
+      if (e instanceof ApiRequestError && e.status === 401) loggedOut = true;
+      else {
+        stale = true;
+        // Keep the last-known roster instead of blanking the members table on a
+        // transient blip: samples fall back to state.json below, the roster to `prev`.
+        if (prev) {
+          shares = prev.shares;
+          members = prev.members;
+          users = prev.users;
+        }
       }
     }
   }
@@ -147,8 +168,9 @@ export async function gatherView(
   }
 
   // last resort: poll the endpoint directly so the view is never empty
-  if (samples.length === 0) {
-    const live = await tryLivePoll(configDir);
+  // (skipped when SOCKS5 is required but the proxy is down)
+  if (samples.length === 0 && networkAllowed) {
+    const live = await tryLivePoll(configDir, outbound.ok ? outbound.fetchImpl : undefined);
     if (live) {
       samples = live;
       origin = "live";
@@ -173,11 +195,16 @@ export async function gatherView(
   };
 }
 
-async function tryLivePoll(configDir: string): Promise<UsageSample[] | null> {
+async function tryLivePoll(
+  configDir: string,
+  fetchImpl?: typeof fetch
+): Promise<UsageSample[] | null> {
+  // Belt-and-suspenders: never live-poll Anthropic when SOCKS5 is configured but down.
+  if (resolveSocks5Proxy(process.env) && !fetchImpl) return null;
   const creds = await readCredentials(configDir);
   if (!creds || isTokenExpired(creds)) return null;
   try {
-    return await pollUsage(creds.accessToken);
+    return await pollUsage(creds.accessToken, fetchImpl ? { fetchImpl } : undefined);
   } catch (err) {
     if (err instanceof UsageAuthError) return null;
     return null;

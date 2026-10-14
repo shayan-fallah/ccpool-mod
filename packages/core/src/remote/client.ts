@@ -44,6 +44,11 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 
 interface HttpOptions {
   fetchImpl?: typeof fetch;
+  /**
+   * Resolve `fetch` per request (e.g. SOCKS5-wrapped when the proxy is up).
+   * Wins over a static {@link fetchImpl} when both are set.
+   */
+  getFetch?: () => typeof fetch;
   /** Override the per-request timeout (ms). Defaults to {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number;
 }
@@ -71,21 +76,27 @@ async function throwApiError(res: Response): Promise<never> {
   throw new ApiRequestError(res.status, code, message);
 }
 
+function resolveFetch(opts: HttpOptions): () => typeof fetch {
+  if (opts.getFetch) return opts.getFetch;
+  const fixed = opts.fetchImpl ?? fetch;
+  return () => fixed;
+}
+
 /** Thin fetch wrapper for the auth endpoints (init/join/login flows). */
 export class CcpoolClient {
-  private readonly fetchImpl: typeof fetch;
+  private readonly getFetch: () => typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(
     private readonly baseUrl: string,
     opts: HttpOptions = {}
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.getFetch = resolveFetch(opts);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await this.fetchImpl(
+    const res = await this.getFetch()(
       new URL(path, this.baseUrl),
       withTimeout(
         {
@@ -107,7 +118,7 @@ export class CcpoolClient {
     if (memberName) {
       url.searchParams.set("memberName", memberName);
     }
-    const res = await this.fetchImpl(url, withTimeout({ method: "GET" }, this.timeoutMs));
+    const res = await this.getFetch()(url, withTimeout({ method: "GET" }, this.timeoutMs));
     if (!res.ok) await throwApiError(res);
     return (await res.json()) as GroupLookupResponse;
   }
@@ -127,7 +138,7 @@ export class CcpoolClient {
 
 /** The daemon's sink: one POST per tick, bearer-authenticated. */
 export class HttpIngestSink implements IngestSink {
-  private readonly fetchImpl: typeof fetch;
+  private readonly getFetch: () => typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(
@@ -135,12 +146,12 @@ export class HttpIngestSink implements IngestSink {
     private readonly token: string,
     opts: HttpOptions = {}
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.getFetch = resolveFetch(opts);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async bootstrap(): Promise<IngestBootstrap> {
-    const res = await this.fetchImpl(
+    const res = await this.getFetch()(
       new URL("/v1/bootstrap", this.baseUrl),
       withTimeout({ headers: { authorization: `Bearer ${this.token}` } }, this.timeoutMs)
     );
@@ -151,7 +162,7 @@ export class HttpIngestSink implements IngestSink {
 
   async ingest(batch: TickBatch, meta: IngestMeta): Promise<void> {
     const body: IngestRequest = { at: meta.at, accountId: meta.accountId, ...batch };
-    const res = await this.fetchImpl(
+    const res = await this.getFetch()(
       new URL("/v1/ingest", this.baseUrl),
       withTimeout(
         {
@@ -182,7 +193,7 @@ export class HttpIngestSink implements IngestSink {
  * re-sends the few-KB view) when the ledger actually changed.
  */
 export class HttpViewSource implements ViewSource {
-  private readonly fetchImpl: typeof fetch;
+  private readonly getFetch: () => typeof fetch;
   private readonly timeoutMs: number;
   private cache: { etag: string; view: SharedView } | null = null;
 
@@ -191,14 +202,14 @@ export class HttpViewSource implements ViewSource {
     private readonly token: string,
     opts: HttpOptions = {}
   ) {
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.getFetch = resolveFetch(opts);
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async fetchView(): Promise<SharedView> {
     const headers: Record<string, string> = { authorization: `Bearer ${this.token}` };
     if (this.cache) headers["if-none-match"] = this.cache.etag;
-    const res = await this.fetchImpl(
+    const res = await this.getFetch()(
       new URL("/v1/view", this.baseUrl),
       withTimeout({ headers }, this.timeoutMs)
     );
@@ -218,7 +229,7 @@ export class HttpViewSource implements ViewSource {
     url.searchParams.set("cap", query.cap);
     if (query.before) url.searchParams.set("before", query.before);
     if (query.limit) url.searchParams.set("limit", String(query.limit));
-    const res = await this.fetchImpl(
+    const res = await this.getFetch()(
       url,
       withTimeout({ headers: { authorization: `Bearer ${this.token}` } }, this.timeoutMs)
     );

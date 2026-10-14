@@ -8,6 +8,7 @@ import {
 } from "@ccpool/core";
 import { newConfig, saveConfig } from "./config.js";
 import { resolveServerUrl, validateServerUrl } from "./backend.js";
+import { outboundFetchForCli } from "./outbound.js";
 
 /**
  * Shared, non-interactive setup core used by the TUI onboarding wizard and the
@@ -58,11 +59,12 @@ export async function probeSharedGroup(
   const serverUrl = resolveServerUrl(cfg);
   const urlErr = validateServerUrl(serverUrl);
   if (urlErr) return { ok: false, error: urlErr };
+  const outbound = await outboundFetchForCli();
+  if (!outbound.ok) return { ok: false, error: outbound.reason };
   try {
-    const { exists, memberExists } = await new CcpoolClient(serverUrl).lookupGroup(
-      acct.id,
-      memberName || undefined
-    );
+    const { exists, memberExists } = await new CcpoolClient(serverUrl, {
+      fetchImpl: outbound.fetchImpl,
+    }).lookupGroup(acct.id, memberName || undefined);
     return {
       ok: true,
       account: { id: acct.id, email: acct.email },
@@ -120,7 +122,9 @@ export async function applySharedJoin(opts: {
     }
   }
 
-  const client = new CcpoolClient(serverUrl);
+  const outbound = await outboundFetchForCli();
+  if (!outbound.ok) return { ok: false, error: outbound.reason };
+  const client = new CcpoolClient(serverUrl, { fetchImpl: outbound.fetchImpl });
   const req = {
     accountId: acct.id,
     groupPassword: opts.groupPassword,

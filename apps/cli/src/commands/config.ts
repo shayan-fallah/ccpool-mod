@@ -65,7 +65,15 @@ export async function runConfigSet(key: string, value: string): Promise<void> {
         const memberPassword =
           process.env.CCPOOL_MEMBER_PASSWORD ?? (await p.ask(`Password for "${value}"`));
         try {
-          const auth = await new CcpoolClient(resolveServerUrl(cfg)).login({
+          const { outboundFetchForCli } = await import("../lib/outbound.js");
+          const outbound = await outboundFetchForCli();
+          if (!outbound.ok) {
+            console.error(outbound.reason);
+            return false;
+          }
+          const auth = await new CcpoolClient(resolveServerUrl(cfg), {
+            fetchImpl: outbound.fetchImpl,
+          }).login({
             accountId: acct.id,
             memberName: value,
             memberPassword,
