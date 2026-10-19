@@ -33,18 +33,12 @@ describe("resolveSocks5Proxy", () => {
     });
   });
 
-  it("disables when CCPOOL_SOCKS5_PROXY is off even if CCPOOL_SOCKS5=1", () => {
-    expect(resolveSocks5Proxy({ CCPOOL_SOCKS5_PROXY: "off", CCPOOL_SOCKS5: "1" })).toBeNull();
+  it("disables when CCPOOL_SOCKS5_PROXY is off", () => {
+    expect(resolveSocks5Proxy({ CCPOOL_SOCKS5_PROXY: "off" })).toBeNull();
   });
 
-  it("defaults to 127.0.0.1:10808 when CCPOOL_SOCKS5=1 and proxy unset", () => {
-    expect(resolveSocks5Proxy({ CCPOOL_SOCKS5: "1" })).toEqual(
-      parseSocks5Proxy(DEFAULT_SOCKS5_PROXY)
-    );
-  });
-
-  it("is off when neither env is set", () => {
-    expect(resolveSocks5Proxy({})).toBeNull();
+  it("defaults to 127.0.0.1:10808 when env is unset (SOCKS required)", () => {
+    expect(resolveSocks5Proxy({})).toEqual(parseSocks5Proxy(DEFAULT_SOCKS5_PROXY));
   });
 });
 

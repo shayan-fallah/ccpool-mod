@@ -90,6 +90,8 @@ async function setup(initialBody: unknown, expiresAt = NOW + 3_600_000): Promise
       name: "sam",
       now,
       fetchImpl: fetchMock as unknown as typeof fetch,
+      // Tests talk to a mock fetch / in-memory sink — never require the host SOCKS5.
+      env: { CCPOOL_SOCKS5_PROXY: "off" },
       // Read only the test's plaintext file — never fall through to the host's
       // real macOS keychain, which would otherwise satisfy an intentionally
       // expired token and make the poll-skip cases flaky on darwin.
@@ -420,6 +422,7 @@ describe("Daemon (multi-account manager)", () => {
       now: h.deps.now,
       fetchImpl: h.deps.fetchImpl,
       readCredentials: h.deps.readCredentials,
+      env: { CCPOOL_SOCKS5_PROXY: "off" },
       logger: SILENT,
     });
     const res = await daemon.tick();
@@ -446,6 +449,7 @@ describe("Daemon (multi-account manager)", () => {
       now: h.deps.now,
       fetchImpl: h.deps.fetchImpl,
       readCredentials: h.deps.readCredentials,
+      env: { CCPOOL_SOCKS5_PROXY: "off" },
       logger: SILENT,
     });
 

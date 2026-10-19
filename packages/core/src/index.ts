@@ -66,6 +66,7 @@ export {
   DEFAULT_SOCKS5_PROXY,
   parseSocks5Proxy,
   resolveSocks5Proxy,
+  formatSocks5Proxy,
   isSocks5ProxyReachable,
   createSocks5Fetch,
   resolveOutboundFetch,

@@ -10,7 +10,13 @@ import {
   startDaemon,
   type AccountProfile,
 } from "@ccpool/daemon";
-import { resolveConfigDir, type Config, type LocalState } from "@ccpool/core";
+import {
+  formatSocks5Proxy,
+  resolveConfigDir,
+  resolveSocks5Proxy,
+  type Config,
+  type LocalState,
+} from "@ccpool/core";
 import {
   DEFAULT_POLL_INTERVAL_MS,
   activeAccountId,
@@ -183,8 +189,22 @@ export async function runDaemonStart(): Promise<void> {
   sweepLegacyDaemon();
   const cliEntry = cliEntryPath();
   const args = [...process.execArgv, cliEntry, "daemon", "run"];
-  const pid = spawnDetached(process.execPath, args, { logFile });
+  // Pin SOCKS5 into the child env so a daemon started from a shell/GUI without
+  // bashrc still refuses direct Anthropic (default 127.0.0.1:10808 unless off).
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const proxy = resolveSocks5Proxy(process.env);
+  if (proxy) {
+    env.CCPOOL_SOCKS5_PROXY = formatSocks5Proxy(proxy);
+  } else {
+    env.CCPOOL_SOCKS5_PROXY = "off";
+  }
+  const pid = spawnDetached(process.execPath, args, { logFile, env });
   console.log(`Daemon started (pid ${pid}). Logs: ${logFile}`);
+  if (proxy) {
+    console.log(`Outbound via socks5 ${formatSocks5Proxy(proxy)} (no direct Claude requests).`);
+  } else {
+    console.log("Outbound direct (CCPOOL_SOCKS5_PROXY=off).");
+  }
 }
 
 export async function runDaemonStop(): Promise<void> {

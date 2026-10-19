@@ -57,19 +57,21 @@ export function parseSocks5Proxy(raw: string | undefined | null): Socks5Proxy | 
  * Resolve SOCKS5 settings from the environment.
  *
  * - `CCPOOL_SOCKS5_PROXY` — explicit proxy (`127.0.0.1:10808`, `socks5://…`), or
- *   `off` / empty to disable.
- * - `CCPOOL_SOCKS5=1` (or `true` / `yes`) with proxy unset — enable the default
- *   {@link DEFAULT_SOCKS5_PROXY}.
+ *   `off` / empty / `false` to allow **direct** outbound (no proxy).
+ * - If unset: **default ON** at {@link DEFAULT_SOCKS5_PROXY}. Anthropic / ledger
+ *   traffic must not go direct unless the user explicitly disables the proxy —
+ *   a daemon started without shell env (GUI, bare `node`, …) still requires SOCKS5.
  */
 export function resolveSocks5Proxy(env: NodeJS.ProcessEnv = process.env): Socks5Proxy | null {
   if (Object.prototype.hasOwnProperty.call(env, "CCPOOL_SOCKS5_PROXY")) {
     return parseSocks5Proxy(env.CCPOOL_SOCKS5_PROXY);
   }
-  const flag = env.CCPOOL_SOCKS5?.trim().toLowerCase();
-  if (flag === "1" || flag === "true" || flag === "yes" || flag === "on") {
-    return parseSocks5Proxy(DEFAULT_SOCKS5_PROXY);
-  }
-  return null;
+  return parseSocks5Proxy(DEFAULT_SOCKS5_PROXY);
+}
+
+/** `host:port` form for logs / injecting into a child process env. */
+export function formatSocks5Proxy(proxy: Socks5Proxy): string {
+  return `${proxy.host}:${proxy.port}`;
 }
 
 /** TCP probe — is anything accepting connections on the proxy port? */
@@ -118,9 +120,10 @@ export type OutboundFetch =
 /**
  * Pick the outbound `fetch` for this process.
  *
- * - No proxy configured → global `fetch`, always ok.
- * - Proxy configured and reachable → SOCKS5-wrapped `fetch`.
- * - Proxy configured but down → `{ ok: false }` (callers must not send).
+ * - Proxy disabled (`CCPOOL_SOCKS5_PROXY=off`) → global `fetch`, always ok.
+ * - Proxy required (default) and reachable → SOCKS5-wrapped `fetch` only.
+ * - Proxy required but down / broken → `{ ok: false }` (callers must not send;
+ *   never fall back to direct).
  */
 export async function resolveOutboundFetch(
   env: NodeJS.ProcessEnv = process.env,
@@ -128,6 +131,7 @@ export async function resolveOutboundFetch(
 ): Promise<OutboundFetch> {
   const proxy = resolveSocks5Proxy(env);
   if (!proxy) {
+    // Explicitly disabled — direct is allowed.
     return { ok: true, fetchImpl: opts.fetchImpl ?? globalThis.fetch, proxy: null };
   }
   const up = await isSocks5ProxyReachable(proxy, opts.probeTimeoutMs ?? 500);
@@ -135,7 +139,7 @@ export async function resolveOutboundFetch(
     return {
       ok: false,
       proxy,
-      reason: `socks5 proxy unreachable at ${proxy.host}:${proxy.port}`,
+      reason: `socks5 proxy unreachable at ${formatSocks5Proxy(proxy)} — refusing direct outbound`,
     };
   }
   try {
@@ -144,10 +148,11 @@ export async function resolveOutboundFetch(
   } catch (err) {
     // Bundling / missing native deps must not crash the daemon tick — treat like
     // a down proxy so the next interval can retry (and surface a clear reason).
+    // Never fall back to global fetch while a proxy is required.
     return {
       ok: false,
       proxy,
-      reason: `socks5 proxy setup failed (${(err as Error).message})`,
+      reason: `socks5 proxy setup failed (${(err as Error).message}) — refusing direct outbound`,
     };
   }
 }

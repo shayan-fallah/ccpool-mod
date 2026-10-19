@@ -239,6 +239,13 @@ export class Pipeline {
     if (outbound.ok) {
       tickFetch = outbound.fetchImpl;
       if (this.deps.outboundFetchHolder) this.deps.outboundFetchHolder.current = tickFetch;
+      if (outbound.proxy) {
+        this.log.debug(
+          `outbound via socks5 ${outbound.proxy.host}:${outbound.proxy.port} (no direct Anthropic)`
+        );
+      } else {
+        this.log.debug("outbound direct (CCPOOL_SOCKS5_PROXY=off)");
+      }
     } else {
       // Do NOT set pollFailed — keep the normal ~60s interval so we re-probe the
       // proxy quickly when VPN comes back (exponential backoff would hide retries).
