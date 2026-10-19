@@ -66,6 +66,8 @@ export { detectResets } from "./usage/resets.js";
 // optional SOCKS5 outbound (Anthropic + ccpool server when configured)
 export {
   DEFAULT_SOCKS5_PROXY,
+  SOCKS5_PROXY_OFF,
+  Socks5ProxyConfigError,
   parseSocks5Proxy,
   resolveSocks5Proxy,
   formatSocks5Proxy,

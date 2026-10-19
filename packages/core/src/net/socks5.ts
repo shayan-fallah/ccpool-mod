@@ -3,64 +3,86 @@ import { connect } from "node:net";
 /** Default local SOCKS5 endpoint (common Clash / v2ray inbound). */
 export const DEFAULT_SOCKS5_PROXY = "127.0.0.1:10808";
 
+/** The only env value that allows direct (non-SOCKS) outbound. */
+export const SOCKS5_PROXY_OFF = "off";
+
 export interface Socks5Proxy {
   host: string;
   port: number;
 }
 
+/** Thrown when `CCPOOL_SOCKS5_PROXY` is set but not a valid proxy and not exactly `off`. */
+export class Socks5ProxyConfigError extends Error {
+  override name = "Socks5ProxyConfigError";
+}
+
+function invalidProxyMessage(raw: string): string {
+  return (
+    `invalid CCPOOL_SOCKS5_PROXY=${JSON.stringify(raw)} — ` +
+    `use host:port (e.g. ${DEFAULT_SOCKS5_PROXY}), socks5://host:port, ` +
+    `or exactly "${SOCKS5_PROXY_OFF}" to allow direct outbound; fix and retry`
+  );
+}
+
 /**
  * Parse `host:port`, `socks5://host:port`, or `socks5h://host:port`.
- * Returns null for empty / disabled values.
+ * Returns `null` only for exactly {@link SOCKS5_PROXY_OFF} (after trim).
+ * Throws {@link Socks5ProxyConfigError} for empty / mistyped / otherwise invalid values
+ * so a typo never silently falls through to direct Anthropic.
  */
 export function parseSocks5Proxy(raw: string | undefined | null): Socks5Proxy | null {
-  if (raw == null) return null;
-  const trimmed = raw.trim();
-  if (
-    trimmed.length === 0 ||
-    trimmed === "0" ||
-    trimmed === "off" ||
-    trimmed === "false" ||
-    trimmed === "no"
-  ) {
-    return null;
+  if (raw == null) {
+    throw new Socks5ProxyConfigError(
+      `invalid CCPOOL_SOCKS5_PROXY — use host:port (e.g. ${DEFAULT_SOCKS5_PROXY}), ` +
+        `socks5://host:port, or exactly "${SOCKS5_PROXY_OFF}" to allow direct outbound; fix and retry`
+    );
   }
+  const trimmed = raw.trim();
+  if (trimmed === SOCKS5_PROXY_OFF) return null;
 
-  let hostPort = trimmed;
   if (/^socks5h?:\/\//i.test(trimmed)) {
     try {
       const u = new URL(trimmed);
       const port = u.port ? Number(u.port) : 1080;
-      if (!u.hostname || !Number.isFinite(port) || port <= 0) return null;
-      return { host: u.hostname, port };
+      if (u.hostname && Number.isFinite(port) && port > 0) {
+        return { host: u.hostname, port };
+      }
     } catch {
-      return null;
+      /* fall through to throw */
     }
+    throw new Socks5ProxyConfigError(invalidProxyMessage(raw));
   }
 
   // host:port (IPv6 in brackets: [::1]:10808)
-  const bracket = /^\[([^\]]+)\]:(\d+)$/.exec(hostPort);
+  const bracket = /^\[([^\]]+)\]:(\d+)$/.exec(trimmed);
   if (bracket) {
     const port = Number(bracket[2]);
-    if (!Number.isFinite(port) || port <= 0) return null;
-    return { host: bracket[1]!, port };
+    if (Number.isFinite(port) && port > 0) {
+      return { host: bracket[1]!, port };
+    }
+    throw new Socks5ProxyConfigError(invalidProxyMessage(raw));
   }
 
-  const colon = hostPort.lastIndexOf(":");
-  if (colon <= 0) return null;
-  const host = hostPort.slice(0, colon);
-  const port = Number(hostPort.slice(colon + 1));
-  if (!host || !Number.isFinite(port) || port <= 0) return null;
-  return { host, port };
+  const colon = trimmed.lastIndexOf(":");
+  if (colon > 0) {
+    const host = trimmed.slice(0, colon);
+    const port = Number(trimmed.slice(colon + 1));
+    if (host && Number.isFinite(port) && port > 0) {
+      return { host, port };
+    }
+  }
+
+  throw new Socks5ProxyConfigError(invalidProxyMessage(raw));
 }
 
 /**
  * Resolve SOCKS5 settings from the environment.
  *
- * - `CCPOOL_SOCKS5_PROXY` — explicit proxy (`127.0.0.1:10808`, `socks5://…`), or
- *   `off` / empty / `false` to allow **direct** outbound (no proxy).
- * - If unset: **default ON** at {@link DEFAULT_SOCKS5_PROXY}. Anthropic / ledger
- *   traffic must not go direct unless the user explicitly disables the proxy —
- *   a daemon started without shell env (GUI, bare `node`, …) still requires SOCKS5.
+ * - Unset: **default ON** at {@link DEFAULT_SOCKS5_PROXY}.
+ * - Exactly `off` (trim): allow **direct** outbound (no proxy).
+ * - Valid `host:port` / `socks5://…`: require that proxy.
+ * - Anything else (empty, `false`, typos, …): throw {@link Socks5ProxyConfigError}
+ *   — never treat a mistype as direct.
  */
 export function resolveSocks5Proxy(env: NodeJS.ProcessEnv = process.env): Socks5Proxy | null {
   if (Object.prototype.hasOwnProperty.call(env, "CCPOOL_SOCKS5_PROXY")) {
@@ -115,7 +137,7 @@ export async function createSocks5Fetch(proxy: Socks5Proxy): Promise<typeof fetc
 
 export type OutboundFetch =
   | { ok: true; fetchImpl: typeof fetch; proxy: Socks5Proxy | null }
-  | { ok: false; proxy: Socks5Proxy; reason: string };
+  | { ok: false; proxy: Socks5Proxy | null; reason: string };
 
 /**
  * Pick the outbound `fetch` for this process.
@@ -124,14 +146,23 @@ export type OutboundFetch =
  * - Proxy required (default) and reachable → SOCKS5-wrapped `fetch` only.
  * - Proxy required but down / broken → `{ ok: false }` (callers must not send;
  *   never fall back to direct).
+ * - Malformed `CCPOOL_SOCKS5_PROXY` → `{ ok: false }` with a fix hint (never direct).
  */
 export async function resolveOutboundFetch(
   env: NodeJS.ProcessEnv = process.env,
   opts: { probeTimeoutMs?: number; fetchImpl?: typeof fetch } = {}
 ): Promise<OutboundFetch> {
-  const proxy = resolveSocks5Proxy(env);
+  let proxy: Socks5Proxy | null;
+  try {
+    proxy = resolveSocks5Proxy(env);
+  } catch (err) {
+    if (err instanceof Socks5ProxyConfigError) {
+      return { ok: false, proxy: null, reason: err.message };
+    }
+    throw err;
+  }
   if (!proxy) {
-    // Explicitly disabled — direct is allowed.
+    // Explicitly disabled with exactly "off" — direct is allowed.
     return { ok: true, fetchImpl: opts.fetchImpl ?? globalThis.fetch, proxy: null };
   }
   const up = await isSocks5ProxyReachable(proxy, opts.probeTimeoutMs ?? 500);

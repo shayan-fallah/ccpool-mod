@@ -117,4 +117,13 @@ describe("pollUsage", () => {
     });
     expect(samples.length).toBeGreaterThan(0);
   });
+
+  it("refuses to poll when CCPOOL_SOCKS5_PROXY is mistyped (never direct)", async () => {
+    await expect(
+      pollUsage("tok", { env: { CCPOOL_SOCKS5_PROXY: "false" } })
+    ).rejects.toBeInstanceOf(UsageProxyError);
+    await expect(pollUsage("tok", { env: { CCPOOL_SOCKS5_PROXY: "false" } })).rejects.toThrow(
+      /fix and retry/
+    );
+  });
 });

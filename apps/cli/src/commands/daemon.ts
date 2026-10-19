@@ -14,6 +14,8 @@ import {
   formatSocks5Proxy,
   resolveConfigDir,
   resolveSocks5Proxy,
+  Socks5ProxyConfigError,
+  SOCKS5_PROXY_OFF,
   type Config,
   type LocalState,
 } from "@ccpool/core";
@@ -192,18 +194,28 @@ export async function runDaemonStart(): Promise<void> {
   // Pin SOCKS5 into the child env so a daemon started from a shell/GUI without
   // bashrc still refuses direct Anthropic (default 127.0.0.1:10808 unless off).
   const env: NodeJS.ProcessEnv = { ...process.env };
-  const proxy = resolveSocks5Proxy(process.env);
+  let proxy;
+  try {
+    proxy = resolveSocks5Proxy(process.env);
+  } catch (err) {
+    if (err instanceof Socks5ProxyConfigError) {
+      console.error(err.message);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
   if (proxy) {
     env.CCPOOL_SOCKS5_PROXY = formatSocks5Proxy(proxy);
   } else {
-    env.CCPOOL_SOCKS5_PROXY = "off";
+    env.CCPOOL_SOCKS5_PROXY = SOCKS5_PROXY_OFF;
   }
   const pid = spawnDetached(process.execPath, args, { logFile, env });
   console.log(`Daemon started (pid ${pid}). Logs: ${logFile}`);
   if (proxy) {
     console.log(`Outbound via socks5 ${formatSocks5Proxy(proxy)} (no direct Claude requests).`);
   } else {
-    console.log("Outbound direct (CCPOOL_SOCKS5_PROXY=off).");
+    console.log(`Outbound direct (CCPOOL_SOCKS5_PROXY=${SOCKS5_PROXY_OFF}).`);
   }
 }
 

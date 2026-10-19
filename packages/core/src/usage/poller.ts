@@ -1,6 +1,6 @@
 import type { CapKind, UsageSample } from "../types.js";
 import { CAP_KINDS } from "../types.js";
-import { resolveOutboundFetch, resolveSocks5Proxy } from "../net/socks5.js";
+import { resolveOutboundFetch, resolveSocks5Proxy, Socks5ProxyConfigError } from "../net/socks5.js";
 
 export const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const OAUTH_BETA = "oauth-2025-04-20";
@@ -104,12 +104,21 @@ export async function pollUsage(
     const outbound = await resolveOutboundFetch(env);
     if (!outbound.ok) throw new UsageProxyError(outbound.reason);
     f = outbound.fetchImpl;
-  } else if (resolveSocks5Proxy(env) && f === globalThis.fetch) {
-    // Caller passed the global fetch while SOCKS5 is required — refuse. Tests
-    // inject mocks; production must pass the SOCKS5-wrapped fetch.
-    throw new UsageProxyError(
-      "refusing direct Anthropic poll — SOCKS5 is required (do not use global fetch)"
-    );
+  } else {
+    let socksRequired: boolean;
+    try {
+      socksRequired = resolveSocks5Proxy(env) !== null;
+    } catch (err) {
+      if (err instanceof Socks5ProxyConfigError) throw new UsageProxyError(err.message);
+      throw err;
+    }
+    if (socksRequired && f === globalThis.fetch) {
+      // Caller passed the global fetch while SOCKS5 is required — refuse. Tests
+      // inject mocks; production must pass the SOCKS5-wrapped fetch.
+      throw new UsageProxyError(
+        "refusing direct Anthropic poll — SOCKS5 is required (do not use global fetch)"
+      );
+    }
   }
 
   const res = await f(USAGE_URL, {

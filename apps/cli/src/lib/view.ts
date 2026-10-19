@@ -201,7 +201,13 @@ async function tryLivePoll(
 ): Promise<UsageSample[] | null> {
   // Never live-poll without an explicit outbound fetch (SOCKS5-wrapped when required).
   if (!fetchImpl) return null;
-  if (resolveSocks5Proxy(process.env) && fetchImpl === globalThis.fetch) return null;
+  try {
+    if (resolveSocks5Proxy(process.env) && fetchImpl === globalThis.fetch) return null;
+  } catch {
+    // Malformed CCPOOL_SOCKS5_PROXY — never live-poll direct; gatherView already
+    // surfaces the fix hint via resolveOutboundFetch.
+    return null;
+  }
   const creds = await readCredentials(configDir);
   if (!creds || isTokenExpired(creds)) return null;
   try {

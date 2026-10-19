@@ -2,6 +2,7 @@ import {
   isAnthropicApiUrl,
   resolveOutboundFetch,
   resolveSocks5Proxy,
+  Socks5ProxyConfigError,
   type Socks5Proxy,
 } from "@ccpool/core";
 
@@ -19,7 +20,16 @@ const unsetOutboundFetch: typeof fetch = (input, init) => {
       new Error("refusing direct Anthropic request — SOCKS5 outbound not resolved yet")
     );
   }
-  if (resolveSocks5Proxy(process.env)) {
+  let socksRequired: boolean;
+  try {
+    socksRequired = resolveSocks5Proxy(process.env) !== null;
+  } catch (err) {
+    if (err instanceof Socks5ProxyConfigError) {
+      return Promise.reject(err);
+    }
+    throw err;
+  }
+  if (socksRequired) {
     return Promise.reject(
       new Error("refusing outbound request — SOCKS5 outbound not resolved yet")
     );

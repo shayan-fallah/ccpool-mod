@@ -227,10 +227,11 @@ export class Pipeline {
     let samples = this.prev;
     const batch = emptyBatch();
 
-    // SOCKS5 gate (default ON at 127.0.0.1:10808 unless CCPOOL_SOCKS5_PROXY=off):
-    // when the proxy port is closed, send *nothing* — no Anthropic poll, no server
-    // ingest. Local JSONL is still collected and parked in `pending` until the
-    // proxy returns. Never falls back to direct Anthropic.
+    // SOCKS5 gate (default ON at 127.0.0.1:10808; direct only when
+    // CCPOOL_SOCKS5_PROXY is exactly "off"). When the proxy port is closed or the
+    // env value is mistyped, send *nothing* — no Anthropic poll, no server ingest.
+    // Local JSONL is still collected and parked in `pending` until the proxy
+    // returns (or the env is fixed). Never falls back to direct Anthropic.
     const resolveOutbound = this.deps.resolveOutboundFetch ?? resolveOutboundFetch;
     const outbound = await resolveOutbound(this.deps.env ?? process.env, {
       fetchImpl: this.deps.fetchImpl,

@@ -51,7 +51,7 @@ source ~/.bashrc
 ccpool daemon restart
 ```
 
-Disable SOCKS: `export CCPOOL_SOCKS5_PROXY=off` (or `./scripts/install-client-cli.sh --no-socks5`).
+Disable SOCKS (direct outbound): only `export CCPOOL_SOCKS5_PROXY=off` — typos / `false` / empty are rejected, not treated as off (or `./scripts/install-client-cli.sh --no-socks5`).
 
 ---
 
