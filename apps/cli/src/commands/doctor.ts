@@ -7,6 +7,7 @@ import {
 } from "@ccpool/core";
 import { configPath, loadConfig } from "../lib/config.js";
 import { makeViewSource, resolveServerUrl } from "../lib/backend.js";
+import { outboundFetchForCli } from "../lib/outbound.js";
 
 /** Re-run the inspection + identity checks and print findings. Changes nothing. */
 export async function runDoctor(): Promise<void> {
@@ -46,8 +47,14 @@ export async function runDoctor(): Promise<void> {
       ? "server auth:  token present"
       : "server auth:  no token — re-run `ccpool init`"
   );
+  const outbound = await outboundFetchForCli();
+  if (!outbound.ok) {
+    console.log(`server ping:  skipped (${outbound.reason})`);
+    console.log("ledger:       skipped (SOCKS5 required but unavailable)");
+    return;
+  }
   try {
-    const res = await fetch(new URL("/healthz", serverUrl));
+    const res = await outbound.fetchImpl(new URL("/healthz", serverUrl));
     console.log(res.ok ? "server ping:  ok" : `server ping:  answered ${res.status}`);
   } catch (err) {
     console.log(`server ping:  unreachable (${(err as Error).message})`);

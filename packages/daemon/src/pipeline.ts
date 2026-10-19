@@ -227,15 +227,17 @@ export class Pipeline {
     let samples = this.prev;
     const batch = emptyBatch();
 
-    // SOCKS5 gate: when CCPOOL_SOCKS5_PROXY (or CCPOOL_SOCKS5=1) is set and the
-    // proxy port is closed, send *nothing* — no Anthropic poll, no server ingest.
-    // Local JSONL is still collected and parked in `pending` until the proxy returns.
+    // SOCKS5 gate (default ON at 127.0.0.1:10808 unless CCPOOL_SOCKS5_PROXY=off):
+    // when the proxy port is closed, send *nothing* — no Anthropic poll, no server
+    // ingest. Local JSONL is still collected and parked in `pending` until the
+    // proxy returns. Never falls back to direct Anthropic.
     const resolveOutbound = this.deps.resolveOutboundFetch ?? resolveOutboundFetch;
     const outbound = await resolveOutbound(this.deps.env ?? process.env, {
       fetchImpl: this.deps.fetchImpl,
     });
     let networkAllowed = outbound.ok;
-    let tickFetch: typeof fetch = this.deps.fetchImpl ?? fetch;
+    /** Set only when outbound is allowed — never default to global `fetch`. */
+    let tickFetch: typeof fetch | null = null;
     if (outbound.ok) {
       tickFetch = outbound.fetchImpl;
       if (this.deps.outboundFetchHolder) this.deps.outboundFetchHolder.current = tickFetch;
@@ -253,7 +255,7 @@ export class Pipeline {
       this.log.warn(`${outbound.reason} — skipping all outbound requests this tick`);
     }
 
-    if (!networkAllowed) {
+    if (!networkAllowed || !tickFetch) {
       // Fall through to JSONL collect + park pending; skip poll block entirely.
     } else if (!creds || isTokenExpired(creds, this.nowMs())) {
       // Skip the poll; Claude Code refreshes on its next run (see "Identity"). Not an error.
@@ -264,6 +266,7 @@ export class Pipeline {
         this.log.debug("polling usage endpoint…");
         const fresh = await pollUsage(creds.accessToken, {
           fetchImpl: tickFetch,
+          env: this.deps.env ?? process.env,
           version: this.deps.version,
           capturedAt: nowIso,
         });

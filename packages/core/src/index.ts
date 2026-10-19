@@ -53,8 +53,10 @@ export type { AccountIdentity } from "./identity/resolver.js";
 export {
   pollUsage,
   parseUsage,
+  isAnthropicApiUrl,
   UsageAuthError,
   UsageRequestError,
+  UsageProxyError,
   USAGE_URL,
   OAUTH_BETA,
 } from "./usage/poller.js";

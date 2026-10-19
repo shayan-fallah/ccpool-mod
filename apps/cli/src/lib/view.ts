@@ -199,12 +199,13 @@ async function tryLivePoll(
   configDir: string,
   fetchImpl?: typeof fetch
 ): Promise<UsageSample[] | null> {
-  // Belt-and-suspenders: never live-poll Anthropic when SOCKS5 is configured but down.
-  if (resolveSocks5Proxy(process.env) && !fetchImpl) return null;
+  // Never live-poll without an explicit outbound fetch (SOCKS5-wrapped when required).
+  if (!fetchImpl) return null;
+  if (resolveSocks5Proxy(process.env) && fetchImpl === globalThis.fetch) return null;
   const creds = await readCredentials(configDir);
   if (!creds || isTokenExpired(creds)) return null;
   try {
-    return await pollUsage(creds.accessToken, fetchImpl ? { fetchImpl } : undefined);
+    return await pollUsage(creds.accessToken, { fetchImpl });
   } catch (err) {
     if (err instanceof UsageAuthError) return null;
     return null;

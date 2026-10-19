@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { parseUsage, pollUsage, UsageAuthError, UsageRequestError } from "./poller.js";
+import {
+  parseUsage,
+  pollUsage,
+  UsageAuthError,
+  UsageProxyError,
+  UsageRequestError,
+} from "./poller.js";
 
 // A trimmed copy of the real /api/oauth/usage payload shape.
 const liveBody = {
@@ -84,5 +90,31 @@ describe("pollUsage", () => {
     expect(err).toBeInstanceOf(UsageRequestError);
     expect((err as UsageRequestError).status).toBe(429);
     expect((err as Error).message).toContain("429");
+  });
+
+  it("refuses global fetch while SOCKS5 is required (no direct Anthropic)", async () => {
+    await expect(
+      pollUsage("tok", {
+        fetchImpl: globalThis.fetch,
+        env: { CCPOOL_SOCKS5_PROXY: "127.0.0.1:10808" },
+      })
+    ).rejects.toBeInstanceOf(UsageProxyError);
+  });
+
+  it("refuses to poll when SOCKS5 is required and the proxy port is down", async () => {
+    // Port 1: nothing listens — resolveOutboundFetch must fail closed, never hit Anthropic.
+    await expect(
+      pollUsage("tok", { env: { CCPOOL_SOCKS5_PROXY: "127.0.0.1:1" } })
+    ).rejects.toBeInstanceOf(UsageProxyError);
+  });
+
+  it("allows an injected fetch when SOCKS5 is explicitly off", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(liveBody), { status: 200 })) as unknown as typeof fetch;
+    const samples = await pollUsage("tok", {
+      fetchImpl,
+      env: { CCPOOL_SOCKS5_PROXY: "off" },
+    });
+    expect(samples.length).toBeGreaterThan(0);
   });
 });

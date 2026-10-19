@@ -1,8 +1,18 @@
 import type { CapKind, UsageSample } from "../types.js";
 import { CAP_KINDS } from "../types.js";
+import { resolveOutboundFetch, resolveSocks5Proxy } from "../net/socks5.js";
 
 export const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 export const OAUTH_BETA = "oauth-2025-04-20";
+
+/** True when `url` targets Anthropic's API host (usage poll must never go direct). */
+export function isAnthropicApiUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname === "api.anthropic.com";
+  } catch {
+    return url.includes("api.anthropic.com");
+  }
+}
 
 /** The endpoint key for each cap. Caps absent on a plan come back as `null`. */
 const CAP_FIELD: Record<CapKind, string> = {
@@ -22,6 +32,14 @@ export class UsageRequestError extends Error {
   override name = "UsageRequestError";
   constructor(readonly status: number) {
     super(`usage endpoint returned ${status}`);
+  }
+}
+
+/** Thrown when SOCKS5 is required but unavailable — never falls back to direct. */
+export class UsageProxyError extends Error {
+  override name = "UsageProxyError";
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -59,19 +77,41 @@ export function parseUsage(
 
 export interface PollOptions {
   version?: string;
+  /**
+   * Outbound `fetch`. When omitted, resolved via {@link resolveOutboundFetch}
+   * (SOCKS5 by default). Never silently falls back to global `fetch` while a
+   * proxy is required.
+   */
   fetchImpl?: typeof fetch;
   capturedAt?: string;
+  /** Env for SOCKS5 resolution when `fetchImpl` is omitted. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
  * Read the account-wide tank. Caller must have verified `now < expiresAt` first
- * (the "Identity" section). 401 → {@link UsageAuthError}; other non-2xx → generic Error for backoff.
+ * (the "Identity" section). 401 → {@link UsageAuthError}; other non-2xx →
+ * {@link UsageRequestError}; SOCKS5 required but down → {@link UsageProxyError}.
  */
 export async function pollUsage(
   accessToken: string,
   opts: PollOptions = {}
 ): Promise<UsageSample[]> {
-  const f = opts.fetchImpl ?? fetch;
+  const env = opts.env ?? process.env;
+  let f = opts.fetchImpl;
+
+  if (!f) {
+    const outbound = await resolveOutboundFetch(env);
+    if (!outbound.ok) throw new UsageProxyError(outbound.reason);
+    f = outbound.fetchImpl;
+  } else if (resolveSocks5Proxy(env) && f === globalThis.fetch) {
+    // Caller passed the global fetch while SOCKS5 is required — refuse. Tests
+    // inject mocks; production must pass the SOCKS5-wrapped fetch.
+    throw new UsageProxyError(
+      "refusing direct Anthropic poll — SOCKS5 is required (do not use global fetch)"
+    );
+  }
+
   const res = await f(USAGE_URL, {
     headers: {
       Authorization: `Bearer ${accessToken}`,

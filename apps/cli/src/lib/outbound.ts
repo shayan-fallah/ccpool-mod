@@ -1,15 +1,42 @@
-import { resolveOutboundFetch, type Socks5Proxy } from "@ccpool/core";
+import {
+  isAnthropicApiUrl,
+  resolveOutboundFetch,
+  resolveSocks5Proxy,
+  type Socks5Proxy,
+} from "@ccpool/core";
+
+/**
+ * Fetch that refuses Anthropic (and, when SOCKS5 is required, all outbound)
+ * until {@link outboundFetchForCli} / the daemon tick installs a real transport.
+ * Prevents a race where HttpIngestSink/HttpViewSource run before SOCKS is ready
+ * and accidentally use global `fetch` → direct Claude.
+ */
+const unsetOutboundFetch: typeof fetch = (input, init) => {
+  const url =
+    typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
+  if (isAnthropicApiUrl(url)) {
+    return Promise.reject(
+      new Error("refusing direct Anthropic request — SOCKS5 outbound not resolved yet")
+    );
+  }
+  if (resolveSocks5Proxy(process.env)) {
+    return Promise.reject(
+      new Error("refusing outbound request — SOCKS5 outbound not resolved yet")
+    );
+  }
+  return globalThis.fetch(input, init);
+};
 
 /**
  * Shared mutable fetch for CLI HTTP clients (daemon ingest + status views).
- * When SOCKS5 is configured, the daemon updates `current` each tick; views
- * resolve fresh via {@link outboundFetchForCli}.
+ * When SOCKS5 is required (default), `current` must be the SOCKS5-wrapped fetch
+ * — never global `fetch` — before any Claude or ledger HTTP runs.
  */
 export const outboundFetchHolder: { current: typeof fetch } = {
-  current: globalThis.fetch,
+  current: unsetOutboundFetch,
 };
 
-/** Build a SOCKS5-aware fetch (or fail closed if the proxy is configured but down). */
+/** Build a SOCKS5-aware fetch (or fail closed if the proxy is required but down). */
 export async function outboundFetchForCli(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<
